@@ -444,6 +444,34 @@ function doPost(e) {
 // ---------- one-time setup, run from the editor ----------
 
 /**
+ * A 32 character key, which is 128 bits.
+ *
+ * The key guards every action except ping, and that includes reading the
+ * current 6 digit code. A student who holds the key can therefore read the code
+ * from anywhere and check in without being in the room, so the key is worth
+ * protecting properly.
+ */
+function newKey_() {
+  return (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '').slice(0, 32);
+}
+
+/**
+ * Issues a fresh INSTRUCTOR_KEY and prints it to the log. Run it from the
+ * editor whenever the old key may have been seen: it went into a browser
+ * address bar, it sat in a shared classroom machine, or you simply want a new
+ * one for the term.
+ *
+ * The old key stops working at once. Retype the new one on display.html and
+ * admin.html. Nothing else changes, and no attendance data is touched.
+ */
+function rotateInstructorKey() {
+  var key = newKey_();
+  props_().setProperty('INSTRUCTOR_KEY', key);
+  Logger.log('New INSTRUCTOR_KEY = ' + key);
+  Logger.log('The old key no longer works. Retype this on display.html and admin.html.');
+}
+
+/**
  * Run this once from the Apps Script editor. It creates the tabs and generates
  * a SECRET and an INSTRUCTOR_KEY, then prints the key to the log.
  */
@@ -457,7 +485,7 @@ function setup() {
     p.setProperty('SECRET', Utilities.getUuid() + Utilities.getUuid());
   }
   if (!p.getProperty('INSTRUCTOR_KEY')) {
-    p.setProperty('INSTRUCTOR_KEY', Utilities.getUuid().split('-')[0]);
+    p.setProperty('INSTRUCTOR_KEY', newKey_());
   }
   Logger.log('SECRET is set. INSTRUCTOR_KEY = ' + p.getProperty('INSTRUCTOR_KEY'));
 }
