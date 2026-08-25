@@ -36,6 +36,8 @@
 (function () {
   var cfg = window.ATTENDANCE_CONFIG;
   var params = new URLSearchParams(location.search);
+  // Keep this the same as STUDENT_ID_DIGITS in Code.gs.
+  var ID_DIGITS = 8;
   var classId = (params.get('c') || '').trim().toUpperCase();
 
   var elForm = document.getElementById('form');
@@ -96,7 +98,12 @@
     var studentId = elId.value.replace(/\D/g, '');
     var code = elCode.value.replace(/\D/g, '');
 
-    if (studentId.length < 4) { show('bad', 'Check your ID', 'That does not look like a student ID number.'); return; }
+    // Caught here as well as on the server, so a typo never leaves the phone.
+    if (studentId.length !== ID_DIGITS) {
+      show('bad', 'Check your ID',
+           'A student ID has ' + ID_DIGITS + ' digits. You entered ' + studentId.length + '.');
+      return;
+    }
     if (code.length !== 6) { show('bad', 'Six digits', 'The code on the screen has six digits.'); return; }
 
     elSubmit.disabled = true;

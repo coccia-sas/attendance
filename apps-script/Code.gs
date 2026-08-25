@@ -20,6 +20,11 @@ var WINDOW_SECONDS = 60;
 // typing at the end of a window up to WINDOW_SECONDS extra to finish.
 var GRACE_WINDOWS = 1;
 
+// How many digits a student ID has. Every ID on both Fall 2026 rolls has 8.
+// A number of any other length is a typo, not a student who just registered,
+// so it is refused rather than filed as pending. Set it to 0 to skip the check.
+var STUDENT_ID_DIGITS = 8;
+
 // During add and drop, a student who just registered is not on your roster yet.
 // While this is true, that student is still recorded, with Status "pending",
 // and is told to see you after class. Set it to false once the roster settles,
@@ -249,6 +254,14 @@ function checkin_(params) {
 
   if (!classId) return { ok: false, error: 'This link is missing its class. Scan the QR code on the screen.' };
   if (!studentId) return { ok: false, error: 'Enter your student ID number.' };
+
+  if (STUDENT_ID_DIGITS && studentId.length !== STUDENT_ID_DIGITS) {
+    return {
+      ok: false,
+      error: 'A student ID has ' + STUDENT_ID_DIGITS + ' digits, and you entered '
+             + studentId.length + '. Check the number and try again.'
+    };
+  }
 
   if (!sessionOpen_(classId)) {
     return { ok: false, error: 'Check-in is closed for this class.' };
