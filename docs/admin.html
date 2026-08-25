@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attendance Admin</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap-wide">
+  <h1>Attendance</h1>
+  <p class="sub" id="sub">.</p>
+
+  <div class="row">
+    <select id="classSel" style="width:auto"></select>
+    <button class="secondary" id="refresh" type="button">Refresh</button>
+    <button class="secondary" id="csv" type="button">Download all CSV</button>
+    <button class="secondary" id="roster" type="button">Reload roster</button>
+    <input id="keyField" type="password" placeholder="instructor key"
+           autocomplete="off" style="width:11rem">
+  </div>
+
+  <p class="count" id="count">.</p>
+
+  <div id="pendingBox" class="msg warn hidden"></div>
+
+  <table>
+    <thead>
+      <tr><th>Student</th><th>ID</th><th>Today</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <p class="note" id="note"></p>
+</div>
+
+<script src="config.js"></script>
+<script>
+(function () {
+  var cfg = window.ATTENDANCE_CONFIG;
+  var elClass = document.getElementById('classSel');
+  var elRows = document.getElementById('rows');
+  var elCount = document.getElementById('count');
+  var elSub = document.getElementById('sub');
+  var elNote = document.getElementById('note');
+  var elPending = document.getElementById('pendingBox');
+  var elKey = document.getElementById('keyField');
+
+  Object.keys(cfg.classes).forEach(function (id) {
+    var o = document.createElement('option');
+    o.value = id;
+    o.textContent = cfg.classes[id].label;
+    elClass.appendChild(o);
+  });
+
+  var remembered = localStorage.getItem('attendance.class');
+  if (remembered && cfg.classes[remembered]) elClass.value = remembered;
+
+  elKey.value = localStorage.getItem('attendance.key') || '';
+
+  // The key is stored in this browser only. It never goes into the repo.
+  function key() {
+    return (elKey.value || '').trim();
+  }
+
+  elKey.addEventListener('change', function () {
+    localStorage.setItem('attendance.key', key());
+    load();
+  });
+
+  function url(action) {
+    return cfg.apiUrl + '?action=' + action
+      + '&classId=' + encodeURIComponent(elClass.value)
+      + '&key=' + encodeURIComponent(key());
+  }
+
+  function load() {
+    elNote.textContent = 'Loading.';
+    fetch(url('report')).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res.ok) { elNote.textContent = res.error || 'Error.'; return; }
+
+      var meta = cfg.classes[res.classId] || {};
+      elSub.textContent = (meta.label || res.classId) + ' — ' + cfg.term + ' — '
+        + res.date + ' — check-in is ' + (res.open ? 'OPEN' : 'closed');
+      elCount.textContent = res.presentCount + ' of ' + res.enrolled + ' present';
+
+      // During add and drop these are the students who checked in but are not
+      // on the roster yet. Repaste the roster, then press Reload roster.
+      if (res.pending && res.pending.length) {
+        elPending.className = 'msg warn';
+        elPending.textContent = 'Not on the roster yet: ' + res.pending.join(', ')
+          + '. Repaste the roster, then press Reload roster.';
+      } else {
+        elPending.className = 'msg warn hidden';
+      }
+
+      elRows.innerHTML = '';
+      res.students.forEach(function (s) {
+        var tr = document.createElement('tr');
+        if (!s.present) tr.className = 'absent';
+        var td1 = document.createElement('td'); td1.textContent = s.name;
+        var td2 = document.createElement('td'); td2.textContent = s.id;
+        var td3 = document.createElement('td');
+        td3.className = 'mark' + (s.present ? ' yes' : '');
+        td3.textContent = s.present ? 'present' : '—';
+        tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+        elRows.appendChild(tr);
+      });
+      elNote.textContent = 'The Google Sheet holds every row. This view is today only.';
+    }).catch(function () { elNote.textContent = 'Could not reach the server.'; });
+  }
+
+  document.getElementById('refresh').addEventListener('click', load);
+  elClass.addEventListener('change', function () {
+    localStorage.setItem('attendance.class', elClass.value);
+    load();
+  });
+  document.getElementById('csv').addEventListener('click', function () {
+    window.open(url('csv'), '_blank');
+  });
+  document.getElementById('roster').addEventListener('click', function () {
+    fetch(url('refreshRoster')).then(function (r) { return r.json(); }).then(function (res) {
+      if (res.reconciled) {
+        elNote.textContent = 'Roster reloaded. Filled in ' + res.reconciled + ' pending row(s).';
+      }
+      load();
+    });
+  });
+
+  if (!key()) elKey.focus();
+  load();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attendance Display</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="controls tucked" id="controls">
+  <select id="classSel" aria-label="Class"></select>
+  <button class="secondary" id="openBtn" type="button">Open check-in</button>
+  <button class="secondary" id="closeBtn" type="button">Close check-in</button>
+  <span class="grow"></span>
+  <span id="status">.</span>
+  <input id="keyField" type="password" placeholder="instructor key"
+         autocomplete="off" style="width:11rem;font-size:.85rem;padding:.4rem .5rem">
+</div>
+
+<div class="stage">
+  <div class="meta" id="heading">Attendance</div>
+  <span class="pill closed" id="pill">closed</span>
+  <div class="code" id="code">------</div>
+  <div class="bar"><i id="bar" style="width:100%"></i></div>
+  <img class="qr" id="qr" alt="QR code to the check-in page" hidden>
+  <div class="url" id="url">.</div>
+  <div class="meta" id="tally">.</div>
+</div>
+
+<script src="config.js"></script>
+<script>
+(function () {
+  var cfg = window.ATTENDANCE_CONFIG;
+
+  var elClass = document.getElementById('classSel');
+  var elCode = document.getElementById('code');
+  var elBar = document.getElementById('bar');
+  var elPill = document.getElementById('pill');
+  var elHeading = document.getElementById('heading');
+  var elUrl = document.getElementById('url');
+  var elQr = document.getElementById('qr');
+  var elTally = document.getElementById('tally');
+  var elStatus = document.getElementById('status');
+  var elKey = document.getElementById('keyField');
+
+  Object.keys(cfg.classes).forEach(function (id) {
+    var o = document.createElement('option');
+    o.value = id;
+    o.textContent = cfg.classes[id].label;
+    elClass.appendChild(o);
+  });
+
+  elKey.value = localStorage.getItem('attendance.key') || '';
+
+  // The key is stored in this browser only. It never goes into the repo.
+  function key() {
+    return (elKey.value || '').trim();
+  }
+
+  elKey.addEventListener('change', function () {
+    localStorage.setItem('attendance.key', key());
+    tick();
+  });
+
+  function classId() {
+    return elClass.value;
+  }
+
+  function checkinUrl() {
+    var base = location.href.split('?')[0].replace(/display\.html$/, 'index.html');
+    return base + '?c=' + encodeURIComponent(classId());
+  }
+
+  function paintStatic() {
+    var meta = cfg.classes[classId()] || {};
+    elHeading.textContent = (meta.label || classId()) + ' — ' + cfg.term;
+    elUrl.textContent = checkinUrl().replace(/^https?:\/\//, '');
+    elQr.src = 'qr-' + classId().toLowerCase() + '.svg';
+    elQr.hidden = false;
+    elQr.onerror = function () { elQr.hidden = true; };
+    localStorage.setItem('attendance.class', classId());
+  }
+
+  function call(action) {
+    var u = cfg.apiUrl + '?action=' + action
+          + '&classId=' + encodeURIComponent(classId())
+          + '&key=' + encodeURIComponent(key());
+    return fetch(u).then(function (r) { return r.json(); });
+  }
+
+  var endsAt = 0, windowMs = 60000;
+
+  function tick() {
+    call('code').then(function (res) {
+      if (!res.ok) {
+        elStatus.textContent = res.error || 'error';
+        elCode.textContent = '------';
+        return;
+      }
+      elStatus.textContent = 'connected';
+      elCode.textContent = res.open ? res.code : '------';
+      windowMs = (res.windowSeconds || 60) * 1000;
+      endsAt = Date.now() + (res.secondsLeft * 1000);
+      elPill.textContent = res.open ? 'open' : 'closed';
+      elPill.className = 'pill ' + (res.open ? 'open' : 'closed');
+      elTally.textContent = res.presentCount + ' checked in';
+    }).catch(function () {
+      elStatus.textContent = 'offline';
+    });
+  }
+
+  function frame() {
+    var left = Math.max(0, endsAt - Date.now());
+    elBar.style.width = (100 * left / windowMs) + '%';
+    requestAnimationFrame(frame);
+  }
+
+  document.getElementById('openBtn').addEventListener('click', function () {
+    call('open').then(tick);
+  });
+  document.getElementById('closeBtn').addEventListener('click', function () {
+    call('close').then(tick);
+  });
+  elClass.addEventListener('change', function () { paintStatic(); tick(); });
+
+  var remembered = localStorage.getItem('attendance.class');
+  if (remembered && cfg.classes[remembered]) elClass.value = remembered;
+
+  paintStatic();
+  if (!key()) {
+    document.getElementById('controls').classList.remove('tucked');
+    elKey.focus();
+  }
+  tick();
+  // Poll faster than the code window so the screen never shows a stale code.
+  setInterval(tick, 5000);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+tools/roster.csv
+*.pyc
+__pycache__/
+
+# Never publish these
+Key.txt
+*key*.txt
