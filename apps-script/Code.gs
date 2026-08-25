@@ -67,6 +67,30 @@ function stamp_() {
   return Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm:ss');
 }
 
+/**
+ * A cell from the Date column, as "yyyy-MM-dd".
+ *
+ * The script writes the date as text, but Sheets converts a value that looks
+ * like a date into a real date. Reading it back then yields a Date object, and
+ * String(thatDate) gives "Sun Aug 24 2026 ...", which never matches the text we
+ * compare against. Every row would fail to match, so the day's tally read zero
+ * and repeat check-ins were not caught. Normalise on read, and accept either
+ * shape so rows written before this fix still count.
+ */
+function dayKey_(value) {
+  if (value instanceof Date) {
+    return Utilities.formatDate(value, book_().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  }
+  var text = String(value == null ? '' : value).trim();
+  var iso = text.match(/^\d{4}-\d{2}-\d{2}/);
+  if (iso) return iso[0];
+  var parsed = new Date(text);
+  if (!isNaN(parsed.getTime())) {
+    return Utilities.formatDate(parsed, book_().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  }
+  return text;
+}
+
 function requireKey_(params) {
   var expected = props_().getProperty('INSTRUCTOR_KEY');
   if (!expected) throw new Error('INSTRUCTOR_KEY is not set in Script Properties.');
@@ -188,8 +212,15 @@ function clearRosterCache_() {
 // ---------- attendance ----------
 
 function attendanceTab_() {
-  return tab_(ATTENDANCE_TAB,
+  var sheet = tab_(ATTENDANCE_TAB,
     ['At', 'Date', 'Class', 'StudentID', 'Name', 'Status', 'Window', 'Device']);
+  // Hold the date and the ID as plain text. Otherwise Sheets turns the date
+  // into a date value and strips a leading zero from a student ID.
+  if (!props_().getProperty('FORMATTED_ATTENDANCE')) {
+    sheet.getRange('A:D').setNumberFormat('@');
+    props_().setProperty('FORMATTED_ATTENDANCE', 'yes');
+  }
+  return sheet;
 }
 
 /**
@@ -204,7 +235,7 @@ function presentToday_(classId) {
   var rows = sheet.getRange(2, 2, last - 1, 5).getValues();
   var day = today_();
   for (var i = 0; i < rows.length; i++) {
-    if (String(rows[i][0]) !== day) continue;
+    if (dayKey_(rows[i][0]) !== day) continue;
     if (normClass_(rows[i][1]) !== classId) continue;
     seen[normId_(rows[i][2])] = String(rows[i][4] || 'enrolled');
   }
