@@ -307,7 +307,8 @@ function checkin_(params) {
     name: firstName_(student ? student.name : ''),
     message: student
       ? 'Present'
-      : 'Recorded, but you are not on my roster yet. See me after class so I can fix it.'
+      : 'Recorded, but that ID is not on my roster. Double check your ID number. '
+        + 'If it is correct, see me after class so I can fix the roster.'
   };
 }
 
