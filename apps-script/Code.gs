@@ -2,7 +2,7 @@
  * Attendance backend for any course-section.
  *
  * Runs as a Google Apps Script web app bound to a Google Sheet.
- * The Sheet holds three tabs: Roster, Attendance, Sessions.
+ * The Sheet holds four tabs: Roster, Attendance, Sessions, Errors.
  * The static pages on GitHub Pages call this script. No other server.
  *
  * A "class id" identifies one course-section, for example FIN331-02. One Sheet
@@ -31,10 +31,30 @@ var STUDENT_ID_DIGITS = 8;
 // which for Fall 2026 is after September 4.
 var ALLOW_UNROSTERED = true;
 
+// How long a check-in waits for the lock, in milliseconds. Every check-in takes
+// the same lock, so the whole class queues on it. 10 seconds was too short: a
+// student at the back of the queue got a raw "Lock timeout" error.
+var LOCK_WAIT_MS = 25000;
+
+// What a student sees when the server cannot write the row right now. The page
+// sends the check-in again on its own, so a student rarely reads this.
+var BUSY_MESSAGE = 'The class is busy right now. Wait a few seconds, read the '
+                 + 'code on the screen again, and press the button again.';
+
+// How many times the append is tried, and the pause between tries. This covers
+// a Sheets service that fails for a moment. It runs while the lock is held, so
+// it stays short.
+var APPEND_TRIES = 3;
+var APPEND_PAUSE_MS = 300;
+
+// How many attendance rows to read at a time when looking for today's rows.
+var SCAN_CHUNK_ROWS = 500;
+
 // Tab names inside the bound Sheet.
 var ROSTER_TAB = 'Roster';
 var ATTENDANCE_TAB = 'Attendance';
 var SESSIONS_TAB = 'Sessions';
+var ERRORS_TAB = 'Errors';
 
 // ---------- small helpers ----------
 
@@ -62,14 +82,27 @@ function tab_(name, headers) {
   return sheet;
 }
 
+/**
+ * The Sheet time zone, read once per execution and then held.
+ *
+ * Reading the time zone is a call to the Sheets service, not a local read.
+ * dayKey_ needs the zone for every row it looks at, so an uncached read cost
+ * one service call per attendance row. That is what made a check-in slow
+ * enough to time out the lock on a busy day.
+ */
+var TZ_ = null;
+
+function tz_() {
+  if (!TZ_) TZ_ = book_().getSpreadsheetTimeZone();
+  return TZ_;
+}
+
 function today_() {
-  var tz = book_().getSpreadsheetTimeZone();
-  return Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+  return Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd');
 }
 
 function stamp_() {
-  var tz = book_().getSpreadsheetTimeZone();
-  return Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm:ss');
+  return Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd HH:mm:ss');
 }
 
 /**
@@ -84,14 +117,14 @@ function stamp_() {
  */
 function dayKey_(value) {
   if (value instanceof Date) {
-    return Utilities.formatDate(value, book_().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+    return Utilities.formatDate(value, tz_(), 'yyyy-MM-dd');
   }
   var text = String(value == null ? '' : value).trim();
   var iso = text.match(/^\d{4}-\d{2}-\d{2}/);
   if (iso) return iso[0];
   var parsed = new Date(text);
   if (!isNaN(parsed.getTime())) {
-    return Utilities.formatDate(parsed, book_().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+    return Utilities.formatDate(parsed, tz_(), 'yyyy-MM-dd');
   }
   return text;
 }
@@ -216,35 +249,121 @@ function clearRosterCache_() {
 
 // ---------- attendance ----------
 
+// Set once the number format is known to be correct, so a check-in does not
+// call the Properties service to ask again.
+var FORMATTED_ = false;
+
 function attendanceTab_() {
   var sheet = tab_(ATTENDANCE_TAB,
     ['At', 'Date', 'Class', 'StudentID', 'Name', 'Status', 'Window', 'Device']);
   // Hold the date and the ID as plain text. Otherwise Sheets turns the date
   // into a date value and strips a leading zero from a student ID.
-  if (!props_().getProperty('FORMATTED_ATTENDANCE')) {
-    sheet.getRange('A:D').setNumberFormat('@');
-    props_().setProperty('FORMATTED_ATTENDANCE', 'yes');
+  if (!FORMATTED_) {
+    if (!props_().getProperty('FORMATTED_ATTENDANCE')) {
+      sheet.getRange('A:D').setNumberFormat('@');
+      props_().setProperty('FORMATTED_ATTENDANCE', 'yes');
+    }
+    FORMATTED_ = true;
   }
   return sheet;
 }
 
 /**
+ * A note that one student is already present today.
+ *
+ * This is a shortcut, never the truth. CacheService can drop an entry at any
+ * time, and it is empty after a redeploy. presentToday_ is the fallback and the
+ * Sheet stays the record. The cache only saves the Sheet read on the second and
+ * later taps, which is where the repeat traffic is.
+ *
+ * The key holds the day, so it cannot leak into tomorrow's class.
+ */
+function seenKey_(classId, studentId) {
+  return 'seen|' + classId + '|' + today_() + '|' + studentId;
+}
+
+function seenGet_(classId, studentId) {
+  return CacheService.getScriptCache().get(seenKey_(classId, studentId));
+}
+
+function seenPut_(classId, studentId, status) {
+  // 21600 seconds is the CacheService maximum, and it is far longer than a
+  // class meeting.
+  CacheService.getScriptCache().put(seenKey_(classId, studentId), status, 21600);
+}
+
+/**
  * Today's rows for one class, as { studentId: status }.
+ *
+ * The scan runs backwards from the last row and stops at the first row from an
+ * earlier day. The script only appends, so every row for today sits at the
+ * bottom in time order. Reading the whole sheet instead got slower every class
+ * meeting, and the check-in holds a lock while it reads.
+ *
+ * If you sort the Attendance tab by hand, this assumption breaks. Sort a copy.
  */
 function presentToday_(classId) {
   var sheet = attendanceTab_();
   var last = sheet.getLastRow();
   var seen = {};
   if (last < 2) return seen;
-  // Columns 2..6 are Date, Class, StudentID, Name, Status.
-  var rows = sheet.getRange(2, 2, last - 1, 5).getValues();
+
   var day = today_();
-  for (var i = 0; i < rows.length; i++) {
-    if (dayKey_(rows[i][0]) !== day) continue;
-    if (normClass_(rows[i][1]) !== classId) continue;
-    seen[normId_(rows[i][2])] = String(rows[i][4] || 'enrolled');
+  var bottom = last;
+
+  while (bottom >= 2) {
+    var top = Math.max(2, bottom - SCAN_CHUNK_ROWS + 1);
+    // Columns 2..6 are Date, Class, StudentID, Name, Status.
+    var rows = sheet.getRange(top, 2, bottom - top + 1, 5).getValues();
+    for (var i = rows.length - 1; i >= 0; i--) {
+      var key = dayKey_(rows[i][0]);
+      if (key && key !== day) return seen;
+      if (key !== day) continue;
+      if (normClass_(rows[i][1]) !== classId) continue;
+      seen[normId_(rows[i][2])] = String(rows[i][4] || 'enrolled');
+    }
+    bottom = top - 1;
   }
   return seen;
+}
+
+/**
+ * Appends one row, and tries again if the Sheets service refuses.
+ *
+ * A service call fails now and then for no reason the script can see. One
+ * retry turns most of those into a normal check-in. Throws if every try fails,
+ * and the caller then answers "retry", never a raw service message.
+ */
+function appendWithRetry_(sheet, row) {
+  var last = null;
+  for (var i = 0; i < APPEND_TRIES; i++) {
+    try {
+      sheet.appendRow(row);
+      return;
+    } catch (err) {
+      last = err;
+      if (i < APPEND_TRIES - 1) Utilities.sleep(APPEND_PAUSE_MS);
+    }
+  }
+  throw last;
+}
+
+/**
+ * Records a failure on the Errors tab, so you can see what went wrong during a
+ * class instead of guessing from a student's account of it.
+ *
+ * Logging must never break the answer to the student. Every failure here is
+ * swallowed on purpose.
+ */
+function logError_(where, classId, studentId, err) {
+  try {
+    var detail = String(err && err.message ? err.message : err);
+    Logger.log(where + ' ' + classId + ' ' + studentId + ': ' + detail);
+    tab_(ERRORS_TAB, ['At', 'Where', 'Class', 'StudentID', 'Detail'])
+      .appendRow([stamp_(), where, classId, studentId, detail.slice(0, 500)]);
+  } catch (ignored) {
+    // Nothing to do. The student's answer matters more than the log.
+  }
 }
 
 function checkin_(params) {
@@ -279,32 +398,59 @@ function checkin_(params) {
     };
   }
 
+  var name = firstName_(student ? student.name : '');
+
+  // Repeat check, first from the cache and then from the Sheet. Both run
+  // outside the lock. Reading the Sheet was the slow step, and holding the lock
+  // across it made the whole class queue behind one reader.
+  var already = seenGet_(classId, studentId);
+  if (!already) already = presentToday_(classId)[studentId];
+  if (already) {
+    seenPut_(classId, studentId, already);
+    return {
+      ok: true, already: true, status: already, name: name,
+      message: 'You were already marked present today.'
+    };
+  }
+
+  var status = student ? 'enrolled' : 'pending';
+  // The row and the sheet handle are both prepared before the lock, so the
+  // locked section is one append and nothing else.
+  var sheet = attendanceTab_();
+  var row = [
+    stamp_(), today_(), classId, studentId,
+    student ? student.name : '', status,
+    windowIndex_(Date.now()), device
+  ];
+
+  // The lock guards the append only. Two appends at the same instant can each
+  // aim at the same last row, and one would overwrite the other, which loses a
+  // student's attendance. That is why the lock stays.
+  //
+  // tryLock returns false. waitLock threw, and the raw message
+  // ("Lock timeout: another process ...") went straight to the student's phone.
   var lock = LockService.getScriptLock();
-  lock.waitLock(10000);
+  if (!lock.tryLock(LOCK_WAIT_MS)) {
+    // The page retries this on its own, so the student normally sees nothing.
+    return { ok: false, retry: true, error: BUSY_MESSAGE };
+  }
   try {
-    var already = presentToday_(classId)[studentId];
-    if (already) {
-      return {
-        ok: true, already: true, status: already,
-        name: firstName_(student ? student.name : ''),
-        message: 'You were already marked present today.'
-      };
-    }
-    attendanceTab_().appendRow([
-      stamp_(), today_(), classId, studentId,
-      student ? student.name : '',
-      student ? 'enrolled' : 'pending',
-      windowIndex_(Date.now()), device
-    ]);
+    appendWithRetry_(sheet, row);
+  } catch (err) {
+    // The Sheets service refused three times. Say so as a retry, not as a
+    // refusal, because the student did nothing wrong and the page sends again.
+    logError_('append', classId, studentId, err);
+    return { ok: false, retry: true, error: BUSY_MESSAGE };
   } finally {
     lock.releaseLock();
   }
+  seenPut_(classId, studentId, status);
 
   return {
     ok: true,
     already: false,
-    status: student ? 'enrolled' : 'pending',
-    name: firstName_(student ? student.name : ''),
+    status: status,
+    name: name,
     message: student
       ? 'Present'
       : 'Recorded, but that ID is not on my roster. Double check your ID number. '
@@ -421,6 +567,7 @@ function doGet(e) {
     }
     return json_({ ok: false, error: 'Unknown action: ' + action });
   } catch (err) {
+    // This one is for you, not for a student, so it keeps the raw detail.
     return json_({ ok: false, error: String(err && err.message ? err.message : err) });
   }
 }
@@ -428,16 +575,28 @@ function doGet(e) {
 /**
  * The student page posts here with Content-Type text/plain, which keeps the
  * request "simple" and avoids a CORS preflight that Apps Script cannot answer.
+ *
+ * No raw service message leaves this function. A student once read
+ * "Lock timeout: another process ..." on a phone, which said nothing useful and
+ * told the student nothing to do. Every unplanned failure now reads as "retry",
+ * the page sends the check-in again, and the detail goes to the Errors tab for
+ * you.
  */
 function doPost(e) {
+  var body = {};
   try {
-    var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    if (body.action !== 'checkin') {
-      return json_({ ok: false, error: 'Unknown action.' });
-    }
+    body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+  } catch (err) {
+    return json_({ ok: false, error: 'The check-in did not arrive in one piece. Try again.' });
+  }
+  if (body.action !== 'checkin') {
+    return json_({ ok: false, error: 'Unknown action.' });
+  }
+  try {
     return json_(checkin_(body));
   } catch (err) {
-    return json_({ ok: false, error: String(err && err.message ? err.message : err) });
+    logError_('checkin', String(body.classId || ''), String(body.studentId || ''), err);
+    return json_({ ok: false, retry: true, error: BUSY_MESSAGE });
   }
 }
 
@@ -479,6 +638,7 @@ function setup() {
   tab_(ROSTER_TAB, ['Class', 'StudentID', 'Name', 'Email']);
   attendanceTab_();
   tab_(SESSIONS_TAB, ['Date', 'Class', 'Action', 'At']);
+  tab_(ERRORS_TAB, ['At', 'Where', 'Class', 'StudentID', 'Detail']);
 
   var p = props_();
   if (!p.getProperty('SECRET')) {

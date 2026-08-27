@@ -93,6 +93,20 @@
     show('warn', 'ID cleared', 'Type your student ID again next time.');
   });
 
+  // How long the page keeps sending the same check-in before it gives up.
+  //
+  // A busy server, a request that Apps Script refused because too many students
+  // scanned at once, and a dropped mobile request all get the same treatment:
+  // send it again, and say nothing to the student. The student sees "Sending."
+  // the whole time.
+  //
+  // 45 seconds is the limit because the code must still be good when the last
+  // try lands. The server takes the code on screen and the one before it, so a
+  // code is good for at least 60 seconds after a student reads it, even if the
+  // student typed it in the last second of its window.
+  var RETRY_DEADLINE_MS = 45000;
+  var BACKOFF_MS = [700, 1500, 2500, 4000, 6000, 8000, 10000, 10000];
+
   elForm.addEventListener('submit', function (e) {
     e.preventDefault();
     var studentId = elId.value.replace(/\D/g, '');
@@ -110,44 +124,85 @@
     elSubmit.textContent = 'Sending.';
     show('warn', 'Sending.', '');
 
-    fetch(cfg.apiUrl, {
-      method: 'POST',
-      // text/plain keeps this a simple request, so the browser skips the
-      // preflight that Apps Script cannot answer.
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'checkin',
-        classId: classId,
-        studentId: studentId,
-        code: code,
-        device: deviceId()
-      })
-    })
-    .then(function (r) { return r.json(); })
-    .then(function (res) {
-      if (!res.ok) {
-        show('bad', 'Not counted', res.error || 'Something went wrong. Try again.');
-        return;
-      }
-      localStorage.setItem(idKey, studentId);
-      elCode.value = '';
-      if (res.already) {
-        show('warn', 'Already counted',
-             (res.name ? res.name + ' is' : 'You are') + ' already marked present today.');
-      } else if (res.status === 'pending') {
-        // Add and drop period. The row is saved, but the roster has not caught up.
-        show('warn', 'Recorded', res.message);
-      } else {
-        show('ok', 'Present', res.name + ', you are marked present for today.');
-      }
-    })
-    .catch(function () {
-      show('bad', 'No connection', 'The check-in did not reach the server. Check your signal and try again.');
-    })
-    .then(function () {
+    var body = JSON.stringify({
+      action: 'checkin',
+      classId: classId,
+      studentId: studentId,
+      code: code,
+      device: deviceId()
+    });
+
+    var giveUpAt = Date.now() + RETRY_DEADLINE_MS;
+
+    function done() {
       elSubmit.disabled = false;
       elSubmit.textContent = 'Mark me present';
-    });
+    }
+
+    // Sends the check-in again after a wait. Returns true if there is time left.
+    function again(attempt) {
+      var wait = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
+      if (Date.now() + wait > giveUpAt) return false;
+      show('warn', 'Sending.', 'The class is busy. Still trying, please wait.');
+      setTimeout(function () { send(attempt + 1); }, wait);
+      return true;
+    }
+
+    function send(attempt) {
+      fetch(cfg.apiUrl, {
+        method: 'POST',
+        // text/plain keeps this a simple request, so the browser skips the
+        // preflight that Apps Script cannot answer.
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: body
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (!res.ok) {
+          // "retry" means the server could not write the row yet. The student
+          // did nothing wrong, so send it again and say nothing.
+          if (res.retry) {
+            if (again(attempt)) return;
+            // 45 seconds of trying and it still will not go through. Clear the
+            // code, because the one on the screen has rolled over by now.
+            elCode.value = '';
+            elCode.focus();
+            show('bad', 'Not counted', res.error);
+            done();
+            return;
+          }
+          // A real refusal: wrong code, closed class, ID off the roster. Trying
+          // again changes nothing, so tell the student what to fix.
+          show('bad', 'Not counted', res.error || 'Something went wrong. Try again.');
+          done();
+          return;
+        }
+        localStorage.setItem(idKey, studentId);
+        elCode.value = '';
+        if (res.already) {
+          show('warn', 'Already counted',
+               (res.name ? res.name + ' is' : 'You are') + ' already marked present today.');
+        } else if (res.status === 'pending') {
+          // Add and drop period. The row is saved, but the roster has not caught up.
+          show('warn', 'Recorded', res.message);
+        } else {
+          show('ok', 'Present', res.name + ', you are marked present for today.');
+        }
+        done();
+      })
+      .catch(function () {
+        // Lands here for a dropped request, and also when Apps Script answers
+        // with an error page instead of JSON, which is what a burst of more
+        // than 30 at once produces. Both are safe to send again: the server
+        // files one row per student per day, so a repeat cannot double count.
+        if (again(attempt)) return;
+        show('bad', 'No connection',
+             'The check-in did not reach the server. Check your signal and try again.');
+        done();
+      });
+    }
+
+    send(0);
   });
 })();
 </script>

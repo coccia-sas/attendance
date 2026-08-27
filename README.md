@@ -65,9 +65,24 @@ checking in four students. It does not block that, it only records it.
 3. In the Sheet: **Extensions > Apps Script**.
 4. Delete the starter code. Paste in all of `apps-script/Code.gs`. Save.
 5. In the editor, pick the `setup` function and press **Run**. Approve the
-   permission prompt. It creates the three tabs and generates your keys.
+   permission prompt. It creates the four tabs and generates your keys.
 6. Open **View > Logs**. Copy the `INSTRUCTOR_KEY` it prints. That is the key you
    type into the display and admin pages.
+
+### If a check-in gives trouble
+
+The **Errors** tab records every failure that stopped a row from being written.
+Look there first, not at the student's account of it.
+
+A student never reads a Google service message. The page sends a failed check-in
+again by itself, for up to 45 seconds, and shows only "Sending." A student sees
+"Not counted" only after all of those tries fail, or when the check-in is really
+wrong: a bad code, a closed class, or an ID of the wrong length.
+
+Google allows 30 simultaneous executions for your account. A class that all
+scans at the same second can pass that. The extra requests fail before your
+script runs, so nothing in the script can prevent it. The page retries them, and
+that is what covers it.
 
 ### 2. Deploy the web app
 
