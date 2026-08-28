@@ -129,4 +129,35 @@ module.exports = function (t) {
   // A Date object in the Date column, which is what Sheets hands back.
   e.tabs.Attendance.rows.push(['t', new Date(), CLASS, '88888888', 'D', 'enrolled', 1, 'd']);
   t.ok('a real Date cell still counts', !!e.api.presentToday_(CLASS)['88888888']);
+
+  // Two executions for one student, interleaved the worst possible way.
+  //
+  //   B reads, sees nothing.   A reads, sees nothing.
+  //   A takes the lock, writes the row and the note, releases.
+  //   B takes the lock.
+  //
+  // B must not write a second row. The test makes B's first look miss and its
+  // look inside the lock hit, which is exactly that order.
+  e = load();
+  e.post(e.id(1));                         // A completes: row plus cache note
+  var rowsAfterA = e.attendanceRows();
+  var realCache = global.CacheService, staleReads = 0;
+  global.CacheService = { getScriptCache: function () { return {
+    get: function (k) {
+      // The first look is B's, before A had written its note.
+      if (k.indexOf('seen|') === 0 && staleReads++ === 0) return null;
+      return realCache.getScriptCache().get(k);
+    },
+    put: function (k, v) { realCache.getScriptCache().put(k, v); },
+    remove: function (k) { realCache.getScriptCache().remove(k); }
+  }; } };
+  // B's read of the Sheet also came before A's write.
+  var realPresent = global.presentToday_;
+  global.presentToday_ = function () { return {}; };
+  var raced = e.post(e.id(1));
+  global.presentToday_ = realPresent;
+  global.CacheService = realCache;
+  t.ok('a raced second execution writes no second row',
+       e.attendanceRows() === rowsAfterA, 'rows ' + rowsAfterA + ' -> ' + e.attendanceRows());
+  t.ok('the raced student is told they are already present', raced.ok === true && raced.already === true);
 };

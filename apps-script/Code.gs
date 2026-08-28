@@ -52,6 +52,17 @@ var BUSY_MESSAGE = 'The class is busy right now. Wait a few seconds, read the '
 var APPEND_TRIES = 3;
 var APPEND_PAUSE_MS = 300;
 
+// A check-in slower than this is written to the Errors tab, marked "slow".
+//
+// This is how you learn what your Sheet actually costs, instead of guessing.
+// A check-in normally takes well under a second. If the Errors tab fills with
+// "slow" rows, the Attendance tab has grown enough to matter, or Sheets is
+// having a bad day. tools/tests/stress.js shows what that does to a class.
+var SLOW_MS = 3000;
+
+// A cap, so a bad day cannot fill the Sheet with "slow" rows.
+var SLOW_LOG_LIMIT = 20;
+
 // How many attendance rows to read at a time when looking for today's rows.
 var SCAN_CHUNK_ROWS = 500;
 
@@ -371,7 +382,29 @@ function logError_(where, classId, studentId, err) {
   }
 }
 
+/**
+ * Writes a "slow" row when a check-in took long enough to be worth knowing
+ * about. Capped per day, and every failure here is swallowed: a log must never
+ * cost a student a check-in.
+ */
+function noteIfSlow_(classId, studentId, startedAt) {
+  var took = Date.now() - startedAt;
+  if (took < SLOW_MS) return;
+  try {
+    var key = 'slowcount|' + today_();
+    var cache = CacheService.getScriptCache();
+    var count = Number(cache.get(key) || 0);
+    if (count >= SLOW_LOG_LIMIT) return;
+    cache.put(key, String(count + 1), 21600);
+    tab_(ERRORS_TAB, ['At', 'Where', 'Class', 'StudentID', 'Detail'])
+      .appendRow([stamp_(), 'slow', classId, studentId, 'check-in took ' + took + ' ms']);
+  } catch (ignored) {
+    // Nothing to do.
+  }
+}
+
 function checkin_(params) {
+  var startedAt = Date.now();
   var classId = normClass_(params.classId);
   var studentId = normId_(params.studentId);
   var device = String(params.device || '').slice(0, 40);
@@ -440,7 +473,20 @@ function checkin_(params) {
     return { ok: false, retry: true, error: BUSY_MESSAGE };
   }
   try {
+    // Look once more, now that nothing else can append. Two executions for the
+    // same student can both read "not present" before either one writes, and
+    // both would then write. The cache note is written under this same lock, so
+    // whichever gets here second sees the first one's note and stops. A cache
+    // read is quick enough to sit inside the lock; a Sheet read is not.
+    var raced = seenGet_(classId, studentId);
+    if (raced) {
+      return {
+        ok: true, already: true, status: raced, name: name,
+        message: 'You were already marked present today.'
+      };
+    }
     appendWithRetry_(sheet, row);
+    seenPut_(classId, studentId, status);
   } catch (err) {
     // The Sheets service refused three times. Say so as a retry, not as a
     // refusal, because the student did nothing wrong and the page sends again.
@@ -449,7 +495,7 @@ function checkin_(params) {
   } finally {
     lock.releaseLock();
   }
-  seenPut_(classId, studentId, status);
+  noteIfSlow_(classId, studentId, startedAt);
 
   return {
     ok: true,

@@ -95,7 +95,25 @@ them again a moment later.
 
 Run `node tools/tests/run.js` after any edit to `Code.gs` or `index.html`. It
 needs nothing installed. It covers the whole class checking in, repeat taps, a
-held lock, a Sheets service that fails, and every refusal.
+held lock, a Sheets service that fails, two executions racing on one student,
+and every refusal.
+
+Run `node tools/tests/stress.js` to see a class under load. It puts the real
+check-in code on a simulated clock, with Google's 30 execution limit and the
+lock queue in place. Read it as a margin, not as a promise: it uses a modelled
+append time, and it finds the point where students start to be lost.
+
+With everybody tapping at the same instant, a 40 student class is fully marked
+and the slowest student waits about 8 seconds. Nobody is lost until one append
+takes 1100 ms, which is more than five times the expected cost.
+
+### What the append really costs
+
+Do not take the model's word for it. A check-in slower than 3 seconds writes a
+row to the **Errors** tab, marked `slow`, with the time it took. After the first
+class you will have real numbers. An empty Errors tab means the margin above is
+real. A tab full of `slow` rows means the Attendance tab has grown enough to
+matter, and it is time to start a fresh Sheet for the next term.
 
 ### 2. Deploy the web app
 
