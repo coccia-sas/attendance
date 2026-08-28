@@ -107,6 +107,14 @@
   var RETRY_DEADLINE_MS = 45000;
   var BACKOFF_MS = [700, 1500, 2500, 4000, 6000, 8000, 10000, 10000];
 
+  // A random wait before the first send, in milliseconds.
+  //
+  // Google runs 30 of your executions at a time. The only way a class reaches
+  // that is if the taps land together, so the page spreads them out. Nobody
+  // notices under a second and a half, and the student reads "Sending." from
+  // the moment of the tap.
+  var SPREAD_MS = 1500;
+
   elForm.addEventListener('submit', function (e) {
     e.preventDefault();
     var studentId = elId.value.replace(/\D/g, '');
@@ -202,7 +210,9 @@
       });
     }
 
-    send(0);
+    // The first send is spread. Every retry after it is not, because by then the
+    // student has waited long enough.
+    setTimeout(function () { send(0); }, Math.random() * SPREAD_MS);
   });
 })();
 </script>

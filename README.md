@@ -79,10 +79,23 @@ again by itself, for up to 45 seconds, and shows only "Sending." A student sees
 "Not counted" only after all of those tries fail, or when the check-in is really
 wrong: a bad code, a closed class, or an ID of the wrong length.
 
-Google allows 30 simultaneous executions for your account. A class that all
-scans at the same second can pass that. The extra requests fail before your
-script runs, so nothing in the script can prevent it. The page retries them, and
-that is what covers it.
+Google runs 30 of your executions at the same time. That is a count of
+executions in flight at one instant, not a count of students in a class. A
+check-in is a few service calls and one row, so it is over quickly, and 40
+students who tap across a few seconds never come near the limit.
+
+Two things keep it that way. The page waits a random moment under 1.5 seconds
+before its first send, which spreads taps that would otherwise land together.
+The lock wait is short, because a student waiting on the lock still holds an
+execution, so a long wait is what builds a crowd. If the limit is passed anyway,
+Google refuses the extra requests before your script runs, and the page sends
+them again a moment later.
+
+### Testing a change
+
+Run `node tools/tests/run.js` after any edit to `Code.gs` or `index.html`. It
+needs nothing installed. It covers the whole class checking in, repeat taps, a
+held lock, a Sheets service that fails, and every refusal.
 
 ### 2. Deploy the web app
 

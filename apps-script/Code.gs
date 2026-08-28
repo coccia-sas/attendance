@@ -31,10 +31,15 @@ var STUDENT_ID_DIGITS = 8;
 // which for Fall 2026 is after September 4.
 var ALLOW_UNROSTERED = true;
 
-// How long a check-in waits for the lock, in milliseconds. Every check-in takes
-// the same lock, so the whole class queues on it. 10 seconds was too short: a
-// student at the back of the queue got a raw "Lock timeout" error.
-var LOCK_WAIT_MS = 25000;
+// How long a check-in waits for the lock, in milliseconds.
+//
+// Short on purpose. A student waiting on the lock still holds one of the 30
+// executions Google runs for you at a time, so a long wait is what creates a
+// crowd, not what survives one. The append takes well under a second, so 6
+// seconds already lets a long queue drain ahead of you. If it does not, giving
+// the slot back beats holding it: the page sends the check-in again, and by
+// then the crowd has thinned.
+var LOCK_WAIT_MS = 6000;
 
 // What a student sees when the server cannot write the row right now. The page
 // sends the check-in again on its own, so a student rarely reads this.
