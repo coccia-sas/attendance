@@ -69,52 +69,6 @@ checking in four students. It does not block that, it only records it.
 6. Open **View > Logs**. Copy the `INSTRUCTOR_KEY` it prints. That is the key you
    type into the display and admin pages.
 
-### If a check-in gives trouble
-
-The **Errors** tab records every failure that stopped a row from being written.
-Look there first, not at the student's account of it.
-
-A student never reads a Google service message. The page sends a failed check-in
-again by itself, for up to 45 seconds, and shows only "Sending." A student sees
-"Not counted" only after all of those tries fail, or when the check-in is really
-wrong: a bad code, a closed class, or an ID of the wrong length.
-
-Google runs 30 of your executions at the same time. That is a count of
-executions in flight at one instant, not a count of students in a class. A
-check-in is a few service calls and one row, so it is over quickly, and 40
-students who tap across a few seconds never come near the limit.
-
-Two things keep it that way. The page waits a random moment under 1.5 seconds
-before its first send, which spreads taps that would otherwise land together.
-The lock wait is short, because a student waiting on the lock still holds an
-execution, so a long wait is what builds a crowd. If the limit is passed anyway,
-Google refuses the extra requests before your script runs, and the page sends
-them again a moment later.
-
-### Testing a change
-
-Run `node tools/tests/run.js` after any edit to `Code.gs` or `index.html`. It
-needs nothing installed. It covers the whole class checking in, repeat taps, a
-held lock, a Sheets service that fails, two executions racing on one student,
-and every refusal.
-
-Run `node tools/tests/stress.js` to see a class under load. It puts the real
-check-in code on a simulated clock, with Google's 30 execution limit and the
-lock queue in place. Read it as a margin, not as a promise: it uses a modelled
-append time, and it finds the point where students start to be lost.
-
-With everybody tapping at the same instant, a 40 student class is fully marked
-and the slowest student waits about 8 seconds. Nobody is lost until one append
-takes 1100 ms, which is more than five times the expected cost.
-
-### What the append really costs
-
-Do not take the model's word for it. A check-in slower than 3 seconds writes a
-row to the **Errors** tab, marked `slow`, with the time it took. After the first
-class you will have real numbers. An empty Errors tab means the margin above is
-real. A tab full of `slow` rows means the Attendance tab has grown enough to
-matter, and it is time to start a fresh Sheet for the next term.
-
 ### 2. Deploy the web app
 
 1. **Deploy > New deployment**, type **Web app**.
@@ -196,6 +150,68 @@ projector. Move the mouse to the top of the screen to bring it back.
 - **Apps Script quotas** are far above one course. A 60 student section checking in
   twice a week is nothing.
 - **The Sheet is the record.** The pages are only a view of it.
+
+### If a check-in gives trouble
+
+The **Errors** tab records every failure that stopped a row from being written.
+Look there first, not at the student's account of it.
+
+A student never reads a Google service message. The page sends a failed check-in
+again by itself, for up to 45 seconds, and shows only "Sending." A student sees
+"Not counted" only after all of those tries fail, or when the check-in is really
+wrong: a bad code, a closed class, or an ID of the wrong length.
+
+Google runs 30 of your executions at the same time. That is a count of
+executions in flight at one instant, not a count of students in a class. A
+check-in is a few service calls and one row, so it is over quickly, and 40
+students who tap across a few seconds never come near the limit.
+
+Two things keep it that way. The page waits a random moment under 1.5 seconds
+before its first send, which spreads taps that would otherwise land together.
+The lock wait is short, because a student waiting on the lock still holds an
+execution, so a long wait is what builds a crowd. If the limit is passed anyway,
+Google refuses the extra requests before your script runs, and the page sends
+them again a moment later.
+
+### Testing a change
+
+Run `node tools/tests/run.js` after any edit to `Code.gs` or `index.html`. It
+needs nothing installed. It covers the whole class checking in, repeat taps, a
+held lock, a Sheets service that fails, two executions racing on one student,
+and every refusal.
+
+Run `node tools/tests/stress.js` to see a class under load. It puts the real
+check-in code on a simulated clock, with Google's 30 execution limit and the
+lock queue in place. Read it as a margin, not as a promise: it uses a modelled
+append time, and it finds the point where students start to be lost.
+
+With everybody tapping at the same instant, a 40 student class is fully marked
+and the slowest student waits about 8 seconds. Nobody is lost until one append
+takes 1100 ms, which is more than five times the expected cost.
+
+### What the append really costs
+
+Do not take the model's word for it. A check-in slower than 3 seconds writes a
+row to the **Errors** tab, marked `slow`, with the time it took. After the first
+class you will have real numbers. An empty Errors tab means the margin above is
+real. A tab full of `slow` rows means the Attendance tab has grown enough to
+matter, and it is time to start a fresh Sheet for the next term.
+
+## Updating the script after a code change
+
+Do this in the editor, not by making a new deployment. A new deployment issues a
+new `/exec` URL, and `docs/config.js` still points at the old one.
+
+1. In the Sheet: **Extensions > Apps Script**.
+2. Select all the old code and replace it with all of `apps-script/Code.gs`.
+   Save.
+3. **Deploy > Manage deployments**. Press the pencil on the deployment you
+   already have.
+4. Set **Version** to **New version**. Add a short description. **Deploy**.
+5. The `/exec` URL does not change. The QR codes and `config.js` keep working.
+
+Check it in a browser: open your `/exec` URL with `?action=ping` on the end. It
+must answer `{"ok":true,"service":"attendance"}`.
 
 ## If something breaks
 
