@@ -18,7 +18,7 @@ window.ATTENDANCE_CONFIG = {
     },
     'FINA3000-07': {
       label: 'FINA 3000 Section 7',
-      meets: '1:00-2:15 pm M/W, Conner 212'
+      meets: '1:00-2:15 pm M/W, Conner 226'
     }
   }
 };
